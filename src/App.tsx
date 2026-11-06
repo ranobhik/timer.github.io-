@@ -15,6 +15,7 @@ import {
   Trash2,
   Plus,
   Minus,
+  Check,
 } from 'lucide-react';
 import { ChronographDial, TimerStatus, TimeSegment } from './components/ChronographDial';
 import { soundEngine, ALARM_TONES, AlarmTone } from './utils/soundEngine';
@@ -67,6 +68,19 @@ export function App() {
   const [autoRepeat, setAutoRepeat] = useState<boolean>(false);
   const [completedCycles, setCompletedCycles] = useState<number>(0);
 
+  // Подходы (workout sets) tracking, как на 3-м скриншоте
+  const [setsDone, setSetsDone] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem('et66_sets_done') ?? '0', 10);
+    return Number.isFinite(saved) ? Math.max(0, Math.min(99, saved)) : 0;
+  });
+  const [setsTarget, setSetsTarget] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem('et66_sets_target') ?? '5', 10);
+    return Number.isFinite(saved) ? Math.max(1, Math.min(12, saved)) : 5;
+  });
+  const [autoRecordSet, setAutoRecordSet] = useState<boolean>(() => {
+    return localStorage.getItem('et66_sets_auto') !== 'false';
+  });
+
   // Preferences
   const [muted, setMuted] = useState<boolean>(() => {
     return localStorage.getItem('et66_timer_muted') === 'true';
@@ -103,6 +117,33 @@ export function App() {
     localStorage.setItem('et66_timer_theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
+  // Persist workout sets state
+  useEffect(() => {
+    localStorage.setItem('et66_sets_done', String(setsDone));
+  }, [setsDone]);
+
+  useEffect(() => {
+    localStorage.setItem('et66_sets_target', String(setsTarget));
+  }, [setsTarget]);
+
+  useEffect(() => {
+    localStorage.setItem('et66_sets_auto', String(autoRecordSet));
+  }, [autoRecordSet]);
+
+  // One-time success chime when the last planned set is completed
+  const prevSetsDoneRef = useRef(setsDone);
+  useEffect(() => {
+    if (
+      setsTarget > 0 &&
+      setsDone >= setsTarget &&
+      prevSetsDoneRef.current < setsTarget &&
+      !muted
+    ) {
+      soundEngine.playAlarmPattern('chime');
+    }
+    prevSetsDoneRef.current = setsDone;
+  }, [setsDone, setsTarget, muted]);
+
   // Save configured duration when idle
   useEffect(() => {
     if (status === 'IDLE' && totalDurationMs > 0) {
@@ -110,20 +151,27 @@ export function App() {
     }
   }, [totalDurationMs, status]);
 
-  // Update browser tab title dynamically
+  // Update browser tab title dynamically (оставшееся время + прогресс подходов)
   useEffect(() => {
+    const setsSuffix = setsDone > 0 ? ` · Подход ${setsDone}/${setsTarget}` : '';
     if (status === 'RUNNING') {
       const timeStr = formatDocumentTime(remainingMs);
-      document.title = `▶ ${timeStr} — ${label || 'Таймер'}`;
+      document.title = `▶ ${timeStr}${setsSuffix} — ${label || 'Таймер'}`;
     } else if (status === 'PAUSED') {
       const timeStr = formatDocumentTime(remainingMs);
-      document.title = `⏸ ${timeStr} (Пауза) — Таймер`;
+      document.title = `⏸ ${timeStr}${setsSuffix} (Пауза) — Таймер`;
     } else if (status === 'COMPLETED') {
-      document.title = `🔔 ВРЕМЯ ВЫШЛО! — ${label || 'Таймер'}`;
+      document.title =
+        setsTarget > 0 && setsDone >= setsTarget
+          ? `✅ Все подходы выполнены (${setsDone}/${setsTarget}) — ${label || 'Таймер'}`
+          : `🔔 ВРЕМЯ ВЫШЛО!${setsSuffix} — ${label || 'Таймер'}`;
     } else {
-      document.title = 'ТАЙМЕР — Точный отсчёт времени';
+      document.title =
+        setsDone > 0
+          ? `ТАЙМЕР ET-66 · Подход ${setsDone}/${setsTarget} — Точный отсчёт времени`
+          : 'ТАЙМЕР — Точный отсчёт времени';
     }
-  }, [status, Math.ceil(remainingMs / 1000), label]);
+  }, [status, Math.ceil(remainingMs / 1000), label, setsDone, setsTarget]);
 
   // Fullscreen change listener
   useEffect(() => {
@@ -162,6 +210,10 @@ export function App() {
 
       if (left <= 0) {
         setCompletedCycles((c) => c + 1);
+        // Авто-зачёт: каждый завершённый круг таймера отмечает один подход
+        if (autoRecordSet) {
+          setSetsDone((d) => Math.min(99, d + 1));
+        }
 
         if (autoRepeat && totalDurationMs > 0) {
           // Play one alarm chime and immediately loop
@@ -200,7 +252,7 @@ export function App() {
       }
       clearInterval(bgInterval);
     };
-  }, [status, autoRepeat, totalDurationMs, alarmTone, muted]);
+  }, [status, autoRepeat, totalDurationMs, alarmTone, muted, autoRecordSet]);
 
   // Actions
   const handleStartPause = useCallback(() => {
@@ -281,6 +333,38 @@ export function App() {
       if (presetTag) {
         setLabel(presetTag);
       }
+    },
+    [muted]
+  );
+
+  // Подходы: отметить / снять / переключить конкретный / сброс / цель
+  const handleAddSet = useCallback(() => {
+    soundEngine.playClick('start', muted);
+    setSetsDone((d) => Math.min(99, d + 1));
+  }, [muted]);
+
+  const handleRemoveSet = useCallback(() => {
+    soundEngine.playClick('reset', muted);
+    setSetsDone((d) => Math.max(0, d - 1));
+  }, [muted]);
+
+  const handleToggleSet = useCallback(
+    (index: number) => {
+      soundEngine.playClick('step', muted);
+      setSetsDone((d) => (d === index ? index - 1 : index));
+    },
+    [muted]
+  );
+
+  const handleResetSets = useCallback(() => {
+    soundEngine.playClick('reset', muted);
+    setSetsDone(0);
+  }, [muted]);
+
+  const handleAdjustTarget = useCallback(
+    (delta: number) => {
+      soundEngine.playClick('soft', muted);
+      setSetsTarget((t) => Math.max(1, Math.min(12, t + delta)));
     },
     [muted]
   );
@@ -398,9 +482,10 @@ export function App() {
 
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [handleStartPause, handleReset, toggleFullscreen, status]);
+  }, [handleStartPause, handleReset, toggleFullscreen, status, handleAddSet]);
 
   const canStart = remainingMs > 0 || totalDurationMs > 0;
+  const allSetsDone = setsTarget > 0 && setsDone >= setsTarget;
 
   return (
     <div
@@ -611,6 +696,183 @@ export function App() {
             selectedSegment={selectedSegment}
             onSelectSegment={setSelectedSegment}
           />
+
+          {/* Подходы (Sets) Panel — отметка тренировочных подходов */}
+          <div
+            className={`mt-4 rounded-2xl border p-3 transition-colors duration-300 ${
+              allSetsDone
+                ? isDark
+                  ? 'bg-emerald-500/[0.06] border-emerald-500/30'
+                  : 'bg-emerald-50 border-emerald-500/40'
+                : isDark
+                  ? 'bg-[#101218] border-white/[0.08]'
+                  : 'bg-[#FAFAF7] border-black/[0.08]'
+            }`}
+          >
+            {/* Panel header: label + counter + auto-record + goal stepper */}
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`text-[11px] font-semibold uppercase tracking-[0.08em] ${
+                    isDark ? 'text-[#6B7280]' : 'text-neutral-500'
+                  }`}
+                >
+                  Подходы
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono-tabular font-semibold border ${
+                    allSetsDone
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-500'
+                      : isDark
+                        ? 'bg-[#15171C] border-white/10 text-[#F3F4F6]'
+                        : 'bg-white border-black/10 text-neutral-800'
+                  }`}
+                >
+                  {allSetsDone && <Check className="w-3 h-3" strokeWidth={3} />}
+                  {setsDone} / {setsTarget}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleResetSets}
+                  disabled={setsDone === 0}
+                  title="Сбросить подходы"
+                  aria-label="Сбросить подходы"
+                  className={`w-6 h-6 rounded-md inline-flex items-center justify-center border transition-all active:scale-95 disabled:opacity-30 disabled:pointer-events-none ${
+                    isDark
+                      ? 'border-white/10 text-[#9CA3AF] hover:text-white hover:bg-white/5'
+                      : 'border-black/10 text-neutral-500 hover:text-black hover:bg-black/5'
+                  }`}
+                >
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+                {allSetsDone && (
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-500">
+                    Готово!
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {/* Auto-record toggle: отмечать подход при завершении таймера */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundEngine.playClick('soft', muted);
+                    setAutoRecordSet((v) => !v);
+                  }}
+                  aria-pressed={autoRecordSet}
+                  title="Автоматически отмечать подход по завершении таймера"
+                  className={`h-7 pl-2 pr-2.5 rounded-lg inline-flex items-center gap-1.5 text-[10px] sm:text-[11px] font-semibold border transition-all active:scale-95 ${
+                    autoRecordSet
+                      ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-500'
+                      : isDark
+                        ? 'bg-[#15171C] border-white/10 text-[#6B7280] hover:text-[#9CA3AF]'
+                        : 'bg-white border-black/10 text-neutral-400 hover:text-neutral-600'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      autoRecordSet ? 'bg-emerald-400 animate-pulse' : isDark ? 'bg-[#4B5563]' : 'bg-neutral-300'
+                    }`}
+                  />
+                  Авто-зачёт
+                </button>
+
+                {/* Goal stepper */}
+                <div
+                  className={`h-7 rounded-lg inline-flex items-center border overflow-hidden ${
+                    isDark ? 'bg-[#15171C] border-white/10' : 'bg-white border-black/10'
+                  }`}
+                  title="Цель: сколько подходов нужно выполнить"
+                >
+                  <button
+                    type="button"
+                    onClick={() => handleAdjustTarget(-1)}
+                    disabled={setsTarget <= 1}
+                    aria-label="Уменьшить цель"
+                    className={`w-6 h-full inline-flex items-center justify-center transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                      isDark ? 'text-[#9CA3AF] hover:text-white hover:bg-white/5' : 'text-neutral-500 hover:text-black hover:bg-black/5'
+                    }`}
+                  >
+                    <Minus className="w-3 h-3" />
+                  </button>
+                  <span
+                    className={`px-1 text-[10px] sm:text-[11px] font-mono-tabular font-semibold whitespace-nowrap ${
+                      isDark ? 'text-[#F3F4F6]' : 'text-neutral-800'
+                    }`}
+                  >
+                    Цель: {setsTarget}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleAdjustTarget(1)}
+                    disabled={setsTarget >= 12}
+                    aria-label="Увеличить цель"
+                    className={`w-6 h-full inline-flex items-center justify-center transition-colors disabled:opacity-30 disabled:pointer-events-none ${
+                      isDark ? 'text-[#9CA3AF] hover:text-white hover:bg-white/5' : 'text-neutral-500 hover:text-black hover:bg-black/5'
+                    }`}
+                  >
+                    <Plus className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Numbered set toggles + quick actions */}
+            <div className="mt-2 flex flex-wrap items-stretch gap-1.5">
+              {Array.from({ length: setsTarget }, (_, i) => i + 1).map((n) => {
+                const done = n <= setsDone;
+                const isNext = n === setsDone + 1;
+                return (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => handleToggleSet(n)}
+                    aria-pressed={done}
+                    title={done ? `Подход ${n} — выполнен (нажмите, чтобы снять)` : `Отметить подход ${n}`}
+                    className={`flex-1 min-w-[2rem] h-9 rounded-lg text-xs font-mono-tabular font-bold border transition-all active:scale-95 ${
+                      done
+                        ? 'bg-gradient-to-b from-[#FF6E3A] to-[#FF5722] border-[#FF5722]/70 text-white shadow-[0_2px_12px_-2px_rgba(255,87,34,0.55)]'
+                        : isNext
+                          ? isDark
+                            ? 'bg-[#15171C] border-[#FF5722]/60 text-[#FF8A5C] hover:bg-[#FF5722]/10'
+                            : 'bg-white border-[#FF5722]/60 text-[#FF5722] hover:bg-[#FF5722]/5'
+                          : isDark
+                            ? 'bg-[#15171C] border-white/10 text-[#9CA3AF] hover:text-white hover:border-white/25'
+                            : 'bg-white border-black/10 text-neutral-500 hover:text-black hover:border-black/25'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                );
+              })}
+              {/* Remove last set */}
+              <button
+                type="button"
+                onClick={handleRemoveSet}
+                disabled={setsDone === 0}
+                title="Снять последний подход"
+                aria-label="Снять последний подход"
+                className={`w-9 h-9 rounded-lg border inline-flex items-center justify-center transition-all active:scale-95 disabled:opacity-30 disabled:pointer-events-none ${
+                  isDark
+                    ? 'bg-[#15171C] border-white/10 text-[#9CA3AF] hover:text-white hover:bg-white/5'
+                    : 'bg-white border-black/10 text-neutral-500 hover:text-black hover:bg-black/5'
+                }`}
+              >
+                <Minus className="w-4 h-4" />
+              </button>
+              {/* Mark next set done */}
+              <button
+                type="button"
+                onClick={handleAddSet}
+                title="Отметить следующий подход (клавиша S)"
+                className="h-9 px-3 sm:px-4 rounded-lg border border-[#FF5722]/70 text-[#FF5722] hover:bg-[#FF5722]/10 text-[11px] sm:text-xs font-bold inline-flex items-center gap-1 transition-all active:scale-95"
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={3} />
+                Подход
+              </button>
+            </div>
+          </div>
 
           {/* Quick Time Adjustment & Preset Matrix */}
           <div className="mt-4 pt-4 border-t border-white/[0.07] dark:border-white/[0.07] space-y-2.5"
@@ -844,6 +1106,18 @@ export function App() {
             M
           </kbd>
           <span>Звук</span>
+        </div>
+        <div className="inline-flex items-center gap-1.5">
+          <kbd
+            className={`px-1.5 py-0.5 rounded text-[10px] font-mono-tabular border ${
+              isDark
+                ? 'bg-[#15171C] border-white/10 text-[#9CA3AF]'
+                : 'bg-white border-black/10 text-neutral-600'
+            }`}
+          >
+            S
+          </kbd>
+          <span>+1 Подход</span>
         </div>
         <div className="inline-flex items-center gap-1.5">
           <kbd
