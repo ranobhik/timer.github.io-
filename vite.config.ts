@@ -10,7 +10,15 @@ const __dirname = path.dirname(__filename);
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Source lives in src/ so the repository ROOT index.html can hold the
+  // self-contained production build (it is served as-is by GitHub Pages
+  // when Source = "Deploy from a branch").
+  root: "src",
   plugins: [react(), tailwindcss(), viteSingleFile()],
+  build: {
+    outDir: "../dist",
+    emptyOutDir: true,
+  },
   server: {
     allowedHosts: true,
   },

@@ -51,14 +51,33 @@ function formatDocumentTime(ms: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+// Safe localStorage access. Some browsers/modes throw on read (Safari private mode,
+// "block third-party storage", embedded webviews) — an uncaught throw in a lazy
+// useState initializer crashes the whole render and leaves a white screen.
+function safeStorageGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Persisting is best-effort; the timer still works in-memory.
+  }
+}
+
 export function App() {
   // Initial default: 5 minutes (300,000 ms)
   const [totalDurationMs, setTotalDurationMs] = useState<number>(() => {
-    const saved = localStorage.getItem('et66_timer_duration_ms');
+    const saved = safeStorageGet('et66_timer_duration_ms');
     return saved ? Math.max(0, parseInt(saved, 10)) : 5 * 60 * 1000;
   });
   const [remainingMs, setRemainingMs] = useState<number>(() => {
-    const saved = localStorage.getItem('et66_timer_duration_ms');
+    const saved = safeStorageGet('et66_timer_duration_ms');
     return saved ? Math.max(0, parseInt(saved, 10)) : 5 * 60 * 1000;
   });
 
@@ -70,27 +89,27 @@ export function App() {
 
   // Подходы (workout sets) tracking, как на 3-м скриншоте
   const [setsDone, setSetsDone] = useState<number>(() => {
-    const saved = parseInt(localStorage.getItem('et66_sets_done') ?? '0', 10);
+    const saved = parseInt(safeStorageGet('et66_sets_done') ?? '0', 10);
     return Number.isFinite(saved) ? Math.max(0, Math.min(99, saved)) : 0;
   });
   const [setsTarget, setSetsTarget] = useState<number>(() => {
-    const saved = parseInt(localStorage.getItem('et66_sets_target') ?? '5', 10);
+    const saved = parseInt(safeStorageGet('et66_sets_target') ?? '5', 10);
     return Number.isFinite(saved) ? Math.max(1, Math.min(12, saved)) : 5;
   });
   const [autoRecordSet, setAutoRecordSet] = useState<boolean>(() => {
-    return localStorage.getItem('et66_sets_auto') !== 'false';
+    return safeStorageGet('et66_sets_auto') !== 'false';
   });
 
   // Preferences
   const [muted, setMuted] = useState<boolean>(() => {
-    return localStorage.getItem('et66_timer_muted') === 'true';
+    return safeStorageGet('et66_timer_muted') === 'true';
   });
   const [alarmTone, setAlarmTone] = useState<AlarmTone>(() => {
-    const saved = localStorage.getItem('et66_timer_tone') as AlarmTone;
+    const saved = safeStorageGet('et66_timer_tone') as AlarmTone;
     return saved && ['braun', 'chime', 'pulse'].includes(saved) ? saved : 'braun';
   });
   const [isDark, setIsDark] = useState<boolean>(() => {
-    const saved = localStorage.getItem('et66_timer_theme');
+    const saved = safeStorageGet('et66_timer_theme');
     return saved ? saved === 'dark' : true;
   });
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -103,31 +122,31 @@ export function App() {
 
   // Save preferences
   useEffect(() => {
-    localStorage.setItem('et66_timer_muted', String(muted));
+    safeStorageSet('et66_timer_muted', String(muted));
     if (muted) {
       soundEngine.stopAlarmLoop();
     }
   }, [muted]);
 
   useEffect(() => {
-    localStorage.setItem('et66_timer_tone', alarmTone);
+    safeStorageSet('et66_timer_tone', alarmTone);
   }, [alarmTone]);
 
   useEffect(() => {
-    localStorage.setItem('et66_timer_theme', isDark ? 'dark' : 'light');
+    safeStorageSet('et66_timer_theme', isDark ? 'dark' : 'light');
   }, [isDark]);
 
   // Persist workout sets state
   useEffect(() => {
-    localStorage.setItem('et66_sets_done', String(setsDone));
+    safeStorageSet('et66_sets_done', String(setsDone));
   }, [setsDone]);
 
   useEffect(() => {
-    localStorage.setItem('et66_sets_target', String(setsTarget));
+    safeStorageSet('et66_sets_target', String(setsTarget));
   }, [setsTarget]);
 
   useEffect(() => {
-    localStorage.setItem('et66_sets_auto', String(autoRecordSet));
+    safeStorageSet('et66_sets_auto', String(autoRecordSet));
   }, [autoRecordSet]);
 
   // One-time success chime when the last planned set is completed
@@ -147,7 +166,7 @@ export function App() {
   // Save configured duration when idle
   useEffect(() => {
     if (status === 'IDLE' && totalDurationMs > 0) {
-      localStorage.setItem('et66_timer_duration_ms', String(totalDurationMs));
+      safeStorageSet('et66_timer_duration_ms', String(totalDurationMs));
     }
   }, [totalDurationMs, status]);
 
